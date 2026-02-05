@@ -15,6 +15,9 @@ except ImportError:
     tkinter_available = False
     print("Uyarı: tkinter modülü bulunamadı. Dosya seçme özelliği çalışmayacak.")
 
+import threading
+from pystray import Icon as TrayIcon, MenuItem as TrayMenuItem, Menu as TrayMenu
+from PIL import Image as PILImage
 
 # --- Platforma Özel Kütüphaneleri Yüklemeyi Dene (Windows için) ---
 IS_WINDOWS = (sys.platform == 'win32')
@@ -35,6 +38,63 @@ except ImportError:
 SETTINGS_FILE = "ayarlar.json"
 LANGUAGE_FILE = "languages.json"
 
+# --- Windows Başlangıç Ayarı (Registry) ---
+try:
+    import winreg
+except ImportError:
+    winreg = None
+import ctypes
+
+def show_message_box(title, message, style=0):
+    """Windows MessageBox gösterir (0: OK, 1: OK/Cancel, etc.)"""
+    if sys.platform == 'win32':
+        try:
+            ctypes.windll.user32.MessageBoxW(0, message, title, style)
+        except:
+            print(f"[{title}] {message}")
+    else:
+        print(f"[{title}] {message}")
+
+def set_startup_registry(enable=True):
+    """Windows başlangıç kaydını ekler veya siler (Registry)"""
+    # win32gui olmasa bile (IS_WINDOWS=False olabilir) registry işlemi winreg ile yapılabilir.
+    if sys.platform != 'win32' or winreg is None:
+        print("Windows dışı platform veya winreg yüklenemedi, başlangıç ayarı yapılamıyor.")
+        return
+
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    app_name = "ScreenPet"
+    
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+        if enable:
+            if getattr(sys, 'frozen', False):
+                # EXE modu: Doğrudan EXE yolunu kaydet
+                exe_path = sys.executable
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+                print(f"Başlangıç kaydı eklendi (EXE): {exe_path}")
+                # Kullanıcıya bilgi ver
+                # show_message_box("Bilgi", "ScreenPet Windows açılışına eklendi.") 
+                # (Sürekli pop-up çıkmasın diye kapalı tutuyoruz, ama debug için açılabilir)
+            else:
+                 # Script modu
+                 python_path = sys.executable.replace("python.exe", "pythonw.exe")
+                 if not os.path.exists(python_path): python_path = sys.executable
+                 script_path = os.path.abspath(__file__)
+                 cmd = f'"{python_path}" "{script_path}"'
+                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, cmd)
+                 print(f"Başlangıç kaydı eklendi (Script): {cmd}")
+        else:
+            try:
+                winreg.DeleteValue(key, app_name)
+                print("Başlangıç kaydı silindi.")
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+    except Exception as e:
+        print(f"Registry işlemi hatası: {e}")
+        show_message_box("Hata", f"Başlangıç ayarı kaydedilemedi:\n{e}", 0x10) # 0x10: Critical Icon
+
 # --- Varsayılan Ayarlar ---
 DEFAULT_SETTINGS = {
     "hayvan_ismi": "Maviş",
@@ -48,16 +108,27 @@ DEFAULT_SETTINGS = {
 }
 
 # --- Dil ve Ayar Fonksiyonları ---
+# --- Dil ve Ayar Fonksiyonları ---
+def get_base_path():
+    """Çalışma dizinini belirler (EXE veya Script moduna göre)"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller ile paketlenmişse (EXE)
+        return os.path.dirname(sys.executable)
+    else:
+        # Normal Python scripti olarak çalışıyorsa
+        return os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
+
 LANGUAGES = {}
 def load_languages():
     global LANGUAGES
-    lang_file_path = os.path.join(os.path.dirname(__file__), LANGUAGE_FILE) if '__file__' in locals() else LANGUAGE_FILE
+    # DÜZELTME: get_resource_path kullanarak hem yerel hem de gömülü (EXE) dosyayı kontrol et
+    lang_file_path = get_resource_path(LANGUAGE_FILE)
     if os.path.exists(lang_file_path):
         try:
             with open(lang_file_path, 'r', encoding='utf-8') as f: LANGUAGES = json.load(f)
-            print("Dil dosyası yüklendi.")
+            print(f"Dil dosyası yüklendi: {lang_file_path}")
         except (json.JSONDecodeError, IOError) as e: print(f"Dil dosyası okunamadı ({e})"); LANGUAGES = {"tr": {"error": "..."}, "en": {"error": "..."}}
-    else: print(f"'{lang_file_path}' bulunamadı."); LANGUAGES = {"tr": {"error": "..."}, "en": {"error": "..."}}
+    else: print(f"'{lang_file_path}' bulunamadı (Base: {get_base_path()})."); LANGUAGES = {"tr": {"error": "..."}, "en": {"error": "..."}}
 
 def get_text(key, lang):
     default_lang = DEFAULT_SETTINGS["language"]
@@ -65,7 +136,7 @@ def get_text(key, lang):
     return lang_dict.get(key, f"<{key}>")
 
 def load_settings():
-    settings_path = os.path.join(os.path.dirname(__file__), SETTINGS_FILE) if '__file__' in locals() else SETTINGS_FILE
+    settings_path = os.path.join(get_base_path(), SETTINGS_FILE)
     if os.path.exists(settings_path):
         try:
             with open(settings_path, 'r') as f: settings = json.load(f)
@@ -80,7 +151,7 @@ def load_settings():
         defaults = DEFAULT_SETTINGS.copy(); defaults["hayvan_color"] = tuple(defaults["hayvan_color"]); defaults["ev_color"] = tuple(defaults["ev_color"]); defaults["top_color"] = tuple(defaults["top_color"]); return defaults
 
 def save_settings(settings):
-    settings_path = os.path.join(os.path.dirname(__file__), SETTINGS_FILE) if '__file__' in locals() else SETTINGS_FILE
+    settings_path = os.path.join(get_base_path(), SETTINGS_FILE)
     try:
         save_data = settings.copy(); save_data["hayvan_color"] = list(settings["hayvan_color"]); save_data["ev_color"] = list(settings["ev_color"]); save_data["top_color"] = list(settings["top_color"])
         with open(settings_path, 'w') as f: json.dump(save_data, f, indent=4)
@@ -91,14 +162,42 @@ def save_settings(settings):
 def restart_application():
     try:
         print("Uygulama yeniden başlatılıyor..."); save_settings(current_settings)
-        python_executable = sys.executable; script_path = os.path.abspath(__file__) if '__file__' in locals() else sys.argv[0]
-        os.execl(python_executable, python_executable, script_path, *sys.argv[1:])
+        if getattr(sys, 'frozen', False):
+             # EXE modu için yeniden başlatma
+             import subprocess
+             subprocess.Popen([sys.executable] + sys.argv[1:])
+             sys.exit()
+        else:
+            # Script modu için yeniden başlatma
+            python_executable = sys.executable; script_path = os.path.abspath(__file__) if '__file__' in locals() else sys.argv[0]
+            os.execl(python_executable, python_executable, script_path, *sys.argv[1:])
     except Exception as e: lang = current_settings.get("language", "tr"); print(get_text("restart_failed", lang).format(e=e))
 
 
 # --- Yardımcı Fonksiyonlar ---
+# --- Yardımcı Fonksiyonlar ---
+def get_resource_path(relative_path):
+    """
+    Kaynak dosya yolunu bulur.
+    Önce çalıştırılabilir dosyanın yanına (User Override),
+    yoksa PyInstaller ile paketlenmiş geçici klasöre (Bundled) bakar.
+    """
+    # 1. Öncelik: Kullanıcının değiştirebileceği yerel dosya (EXE yanı)
+    base_path = get_base_path()
+    local_path = os.path.join(base_path, relative_path)
+    if os.path.exists(local_path):
+        return local_path
+    
+    # 2. Öncelik: Paket içine gömülü dosya (Paketlendiyse)
+    if hasattr(sys, '_MEIPASS'):
+        bundled_path = os.path.join(sys._MEIPASS, relative_path)
+        if os.path.exists(bundled_path):
+            return bundled_path
+            
+    return local_path
+
 def create_asset_folders():
-    base_path = os.path.dirname(__file__) if "__file__" in locals() else os.getcwd()
+    base_path = get_base_path()
     assets_folder = os.path.join(base_path, "Assets")
     subfolders = ["Animal", "House", "Ball"]
     schema_folder_name = "UserSchema"
@@ -107,16 +206,20 @@ def create_asset_folders():
         os.makedirs(assets_folder, exist_ok=True)
         for sub in subfolders:
             os.makedirs(os.path.join(assets_folder, sub, schema_folder_name), exist_ok=True)
+            # Default klasörleri oluşturulsun ama boş olabilir (gömülü kullanılır)
             os.makedirs(os.path.join(assets_folder, sub, default_folder_name), exist_ok=True)
         print("Assets klasör yapısı kontrol edildi/oluşturuldu.")
     except OSError as e: print(f"Assets klasörleri oluşturulurken hata: {e}")
 
 def load_image(asset_type, default_filename, user_filename="user_default.png", size=None):
-    base_path = os.path.dirname(__file__) if "__file__" in locals() else os.getcwd()
-    user_folder = os.path.join(base_path, "Assets", asset_type, "UserSchema")
-    default_folder = os.path.join(base_path, "Assets", asset_type, "Default")
-    user_path = os.path.join(user_folder, user_filename)
-    default_path = os.path.join(default_folder, default_filename)
+    # Kullanıcı görseli her zaman EXE yanındaki Assets/.. klasöründe aranır
+    base_path_local = get_base_path()
+    user_path = os.path.join(base_path_local, "Assets", asset_type, "UserSchema", user_filename)
+    
+    # Varsayılan görsel için hem yerele hem pakete bakılır
+    default_rel_path = os.path.join("Assets", asset_type, "Default", default_filename)
+    default_path = get_resource_path(default_rel_path)
+
     image = None
     final_path_loaded = None
     try:
@@ -176,8 +279,15 @@ try:
     if IS_WINDOWS:
         try:
             hwnd = pygame.display.get_wm_info()['window']
-            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) | win32con.WS_EX_LAYERED)
-            print("Windows: Katmanlı pencere stili ayarlandı.")
+            # Windows Pencere Stilleri:
+            # WS_EX_LAYERED: Şeffaflık için (Color key)
+            # WS_EX_TOOLWINDOW: Görev çubuğunda (Taskbar) ve Alt-Tab'da GİZLEMEK için
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, 
+                                   win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) | 
+                                   win32con.WS_EX_LAYERED | 
+                                   win32con.WS_EX_TOOLWINDOW) # Görev çubuğundan gizle
+            
+            print("Windows: Katmanlı pencere ve ToolWindow stili ayarlandı.")
             win32gui.SetLayeredWindowAttributes(hwnd, win32api.RGB(*TRANSPARENT_COLOR), 0, win32con.LWA_COLORKEY)
             print(f"Windows: Renk anahtarı ({TRANSPARENT_COLOR}) ile şeffaflık ayarlandı.")
             win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
@@ -285,6 +395,7 @@ ayarlar_menu_aktif = False; aktif_ayar_sekmesi = "pet"; menu_konumu = (0, 0); me
 menu_yukseklik = 100; ev_menu_genislik = 120; ev_menu_yukseklik = 110
 topu_getir_button_rect = None; ayarlar_button_rect = None; yemek_ver_button_rect = None
 ayarlar_kapat_button_rect = None; hayvan_isim_duzenle_button_rect = None; hayvan_isim_input_rect = None
+ev_gizle_button_rect = None # Global değişken tanımı
 hayvan_renk_butonlari = {}; ev_renk_butonlari = {}; top_renk_butonlari = {}
 ayarlar_sifirla_button_rect = None; ayarlar_yeniden_baslat_button_rect = None; ayarlar_dil_tr_button_rect = None
 ayarlar_dil_en_button_rect = None; ayarlar_windows_baslat_button_rect = None; ayarlar_sekme_butonlari = {}
@@ -293,6 +404,58 @@ isim_duzenleme_aktif = False; aktif_metin_girisi = ""; cursor_blink_timer = 0; c
 son_ev_tiklama_zamani = 0; cift_tiklama_suresi = 500; hayvan_menu_rect_cache = None; ev_menu_rect_cache = None
 assets_scroll_y = 0; assets_content_height = 0; assets_scrollbar_rect = None
 assets_scrollbar_handle_rect = None; scrollbar_dragging = False; scrollbar_drag_offset_y = 0
+
+
+# --- System Tray (Tepsi Simgesi) ---
+tray_icon = None
+app_visible = True
+
+def toggle_visibility(icon, item):
+    global app_visible
+    app_visible = not app_visible
+    if IS_WINDOWS and hwnd:
+        if app_visible:
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+        else:
+            win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+    elif screen:
+        # Windows dışında basit bir geçiş (tam gizleme olmasa da çizimi durdurur)
+        pass
+
+def quit_from_tray(icon, item):
+    global running
+    running = False
+    icon.stop()
+
+def create_tray_icon():
+    global tray_icon
+    
+    # İkon görselini yükle (Varsayılan kedi veya basit bir çizim)
+    icon_image = None
+    try:
+        # Varsa uygulamanın kendi ikonunu veya varlıklarından birini kullan
+        # Önce 'Assets/Animal/Default/Cat.png' deneyelim
+        cat_path = get_resource_path(os.path.join("Assets", "Animal", "Default", "Cat.png"))
+        if os.path.exists(cat_path):
+             icon_image = PILImage.open(cat_path)
+        else:
+             # Yoksa basit bir renkli kare oluştur
+             icon_image = PILImage.new('RGB', (64, 64), color = (255, 100, 100))
+    except Exception as e:
+        print(f"Tray ikonu yüklenemedi: {e}")
+        icon_image = PILImage.new('RGB', (64, 64), color = (255, 100, 100))
+
+    menu = TrayMenu(
+        TrayMenuItem('Göster/Gizle', toggle_visibility, default=True),
+        TrayMenuItem('Çıkış', quit_from_tray)
+    )
+
+    tray_icon = TrayIcon("ScreenPet", icon_image, "ScreenPet", menu)
+    tray_icon.run()
+
+# Tray ikonunu ayrı bir thread'de başlat
+tray_thread = threading.Thread(target=create_tray_icon, daemon=True)
+tray_thread.start()
 
 
 # --- Hayvan Durumları ve Zamanlayıcılar ---
@@ -315,7 +478,9 @@ while running:
     # ... (Olay İşleme ve Oyun Mantığı kodları öncekiyle aynı) ...
     delta_time = clock.tick(60); current_time = pygame.time.get_ticks(); mouse_pos = pygame.mouse.get_pos(); events = pygame.event.get()
     for event in events:
-        if event.type == pygame.QUIT: running = False
+        if event.type == pygame.QUIT: 
+            # Pencere kapatılmaya çalışıldığında (Alt+F4 vs) uygulamayı kapatma, sadece gizle
+            toggle_visibility(None, None)
         elif event.type == pygame.ACTIVEEVENT:
             if event.gain == 0 and event.state == 1:
                 if hayvan_menu_aktif: hayvan_menu_aktif = False; hayvan_menu_rect_cache = None
@@ -375,7 +540,11 @@ while running:
                         current_settings = DEFAULT_SETTINGS.copy(); current_settings["hayvan_color"] = tuple(current_settings["hayvan_color"]); current_settings["ev_color"] = tuple(current_settings["ev_color"]); current_settings["top_color"] = tuple(current_settings["top_color"]); hayvan_ismi = current_settings["hayvan_ismi"]; hayvan_yas = current_settings["hayvan_yas"]; hayvan_color = current_settings["hayvan_color"]; ev_color = current_settings["ev_color"]; top_color = current_settings["top_color"]; current_language = current_settings["language"]; save_settings(current_settings); print(get_text("settings_reset", current_language)); pygame.display.set_caption(get_text("app_title", current_language))
                     elif ayarlar_yeniden_baslat_button_rect and ayarlar_yeniden_baslat_button_rect.collidepoint(event.pos): restart_application()
                     elif ayarlar_windows_baslat_button_rect and ayarlar_windows_baslat_button_rect.collidepoint(event.pos): #... (toggle)
-                        current_settings["start_with_windows"] = not current_settings["start_with_windows"]; save_settings(current_settings); status_key = "start_win_enable_info" if current_settings["start_with_windows"] else "start_win_disable_info"; print(get_text(status_key, current_language), get_text("start_win_actual_impl_note", current_language))
+                        current_settings["start_with_windows"] = not current_settings["start_with_windows"]
+                        save_settings(current_settings)
+                        set_startup_registry(current_settings["start_with_windows"]) # Registry'i güncelle
+                        status_key = "start_win_enable_info" if current_settings["start_with_windows"] else "start_win_disable_info"
+                        print(get_text(status_key, current_language))
                     elif ayarlar_isim_goster_button_rect and ayarlar_isim_goster_button_rect.collidepoint(event.pos): # İsim Göster/Gizle
                         current_settings["show_object_names"] = not current_settings["show_object_names"]; save_settings(current_settings)
                     elif ayarlar_dil_tr_button_rect and ayarlar_dil_tr_button_rect.collidepoint(event.pos): #... (dil tr)
@@ -411,12 +580,16 @@ while running:
                     if topu_getir_button_rect and topu_getir_button_rect.collidepoint(event.pos): is_on_button = True
                     if ayarlar_button_rect and ayarlar_button_rect.collidepoint(event.pos): is_on_button = True
                     if yemek_ver_button_rect and yemek_ver_button_rect.collidepoint(event.pos): is_on_button = True
+                    if ev_gizle_button_rect and ev_gizle_button_rect.collidepoint(event.pos): is_on_button = True # Gizle butonu
                     if not is_on_button and ev_menu_rect_cache and not ev_menu_rect_cache.collidepoint(event.pos): ev_menu_aktif = False; ev_menu_rect_cache = None; menu_kapatildi = True
                 if not menu_kapatildi:
                     if ev_menu_aktif:
                         if topu_getir_button_rect and topu_getir_button_rect.collidepoint(event.pos): top_ekranda = True; top_merkez = list(mouse_pos); top_hiz_y = 0; top_hiz_x = random.choice([-2, 2, -1.5, 1.5]); top_surukleniyor = True; fare_offset_x = 0; fare_offset_y = 0; top_drag_rect.center = top_merkez; ev_menu_aktif = False; is_chasing_ball = False; hayvan_state = HAYVAN_STATE_IDLE; ev_menu_rect_cache=None; top_angle = 0
                         elif ayarlar_button_rect and ayarlar_button_rect.collidepoint(event.pos): ayarlar_menu_aktif = True; ev_menu_aktif = False; aktif_ayar_sekmesi = "pet"; hayvan_state = HAYVAN_STATE_IDLE; ev_menu_rect_cache=None
                         elif yemek_ver_button_rect and yemek_ver_button_rect.collidepoint(event.pos): hayvan_aclik = 100; hayvan_mutluluk = min(100, hayvan_mutluluk + 10); hayvan_state = HAYVAN_STATE_HAPPY; hayvan_state_timer = HAPPY_DURATION; print("Hayvan beslendi!"); ev_menu_aktif = False; ev_menu_rect_cache=None
+                        elif ev_gizle_button_rect and ev_gizle_button_rect.collidepoint(event.pos): # Gizleme işlemi
+                             toggle_visibility(tray_icon, None)
+                             ev_menu_aktif = False; ev_menu_rect_cache = None
                     elif hayvan_rect.collidepoint(event.pos) and not (hayvan_state == HAYVAN_STATE_GOING_HOME):
                         hayvan_surukleniyor = True; top_surukleniyor = False; ev_surukleniyor = False; fare_offset_x = hayvan_rect.x - event.pos[0]; fare_offset_y = hayvan_rect.y - event.pos[1]; hedef_konum = None; is_chasing_ball = False; hayvan_state = HAYVAN_STATE_IDLE
                         hayvan_click_times.append(current_time); recent_clicks = [t for t in hayvan_click_times if current_time - t < MULTI_CLICK_INTERVAL]
@@ -539,6 +712,12 @@ while running:
 
 
     # --- Çizim Kodları ---
+    if not app_visible:
+        # Görünür değilse çizim yapma, sadece boş (transparan) ekran bas geç
+        screen.fill(TRANSPARENT_COLOR) 
+        pygame.display.update()
+        continue
+
     screen.fill(BACKGROUND_COLOR)
 
     # Ev
@@ -622,38 +801,61 @@ while running:
              hayvan_menu_rect_cache = None
 
         # Ev Sağ Tık Menüsü
+        # Ev Sağ Tık Menüsü
         if ev_menu_aktif:
              getir_text = get_text("get_ball", current_language)
              ayarlar_text = get_text("settings", current_language)
              yemek_text = get_text("feed", current_language)
+             gizle_text = get_text("hide_app", current_language).replace("<hide_app>", "Gizle / Minimize") # Fallback
+             
              getir_surf = menu_font.render(getir_text, True, TEXT_COLOR)
              ayarlar_surf = menu_font.render(ayarlar_text, True, TEXT_COLOR)
              yemek_surf = menu_font.render(yemek_text, True, TEXT_COLOR)
+             gizle_surf = menu_font.render(gizle_text, True, TEXT_COLOR)
+             
              padding = 10
              button_padding = 5
              button_width = ev_menu_genislik - 2 * padding
              button_height = max(getir_surf.get_height(), ayarlar_surf.get_height(), yemek_surf.get_height()) + padding // 2
-             ev_menu_yukseklik = padding * 2 + button_height * 3 + button_padding * 2
+             
+             # 4 buton için yükseklik hesapla
+             ev_menu_yukseklik = padding * 2 + button_height * 4 + button_padding * 3
+             
              mk_x, mk_y = menu_konumu
              if mk_y + ev_menu_yukseklik > SCREEN_HEIGHT:
                  mk_y = SCREEN_HEIGHT - ev_menu_yukseklik
              ev_menu_rect = pygame.Rect(mk_x, mk_y, ev_menu_genislik, ev_menu_yukseklik)
              ev_menu_rect_cache = ev_menu_rect
+             
              pygame.draw.rect(screen, GRAY, ev_menu_rect, border_radius=5)
+             
+             # Buton 1: Topu Getir
              topu_getir_button_rect = pygame.Rect(ev_menu_rect.left + padding, ev_menu_rect.top + padding, button_width, button_height)
              pygame.draw.rect(screen, LIGHT_GRAY, topu_getir_button_rect, border_radius=3)
              getir_text_rect = getir_surf.get_rect(center=topu_getir_button_rect.center)
              screen.blit(getir_surf, getir_text_rect)
+             
+             # Buton 2: Ayarlar
              ayarlar_button_y = topu_getir_button_rect.bottom + button_padding
              ayarlar_button_rect = pygame.Rect(ev_menu_rect.left + padding, ayarlar_button_y, button_width, button_height)
              pygame.draw.rect(screen, LIGHT_GRAY, ayarlar_button_rect, border_radius=3)
              ayarlar_text_rect = ayarlar_surf.get_rect(center=ayarlar_button_rect.center)
              screen.blit(ayarlar_surf, ayarlar_text_rect)
+             
+             # Buton 3: Yemek Ver
              yemek_button_y = ayarlar_button_rect.bottom + button_padding
              yemek_ver_button_rect = pygame.Rect(ev_menu_rect.left + padding, yemek_button_y, button_width, button_height)
              pygame.draw.rect(screen, LIGHT_GRAY, yemek_ver_button_rect, border_radius=3)
              yemek_text_rect = yemek_surf.get_rect(center=yemek_ver_button_rect.center)
              screen.blit(yemek_surf, yemek_text_rect)
+
+             # Buton 4: Gizle
+             gizle_button_y = yemek_ver_button_rect.bottom + button_padding
+             ev_gizle_button_rect = pygame.Rect(ev_menu_rect.left + padding, gizle_button_y, button_width, button_height)
+             pygame.draw.rect(screen, LIGHT_GRAY, ev_gizle_button_rect, border_radius=3)
+             gizle_text_rect = gizle_surf.get_rect(center=ev_gizle_button_rect.center)
+             screen.blit(gizle_surf, gizle_text_rect)
+
         else:
              ev_menu_rect_cache = None
 

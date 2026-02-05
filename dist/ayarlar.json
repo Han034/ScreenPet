@@ -1,0 +1,22 @@
+{
+    "hayvan_ismi": "Mavi\u015f",
+    "hayvan_yas": 1,
+    "hayvan_color": [
+        0,
+        0,
+        255
+    ],
+    "ev_color": [
+        0,
+        255,
+        0
+    ],
+    "top_color": [
+        255,
+        0,
+        0
+    ],
+    "language": "tr",
+    "start_with_windows": false,
+    "show_object_names": false
+}
