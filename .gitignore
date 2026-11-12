@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PyInstaller çıktıları
+build/
+dist/
+
+# Kullanıcıya özel çalışma verisi
+ayarlar.json
+ayarlar.json.tmp
+screenpet.log
+Assets/*/UserSchema/
+
+# Editör / işletim sistemi
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
